@@ -1,0 +1,14 @@
+[project]
+name = "btrust_common"
+version = "0.1.0"
+description = "Common utilities for Btrust FastAPI/Odoo projects"
+authors = [
+    {name = "Peng Wang", email = "pengwang825@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
