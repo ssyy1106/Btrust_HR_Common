@@ -10,5 +10,5 @@ requires-python = ">=3.10"
 dependencies = []
 
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
