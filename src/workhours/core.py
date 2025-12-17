@@ -1,9 +1,7 @@
 from datetime import date, datetime, timedelta
-import functools
 from collections import defaultdict
-import pyodbc
 
-from Types import Shift, Punch, PunchProblem
+from .types import Shift, Punch, PunchProblem
 
 
 def get_date(periodBegin, count) -> str:
@@ -11,8 +9,8 @@ def get_date(periodBegin, count) -> str:
     return (monday + timedelta(days=count)).strftime("%Y-%m-%d")
 
 def six_days_before(date_str: str) -> str:
-    date = datetime.strptime(date_str, "%Y-%m-%d")
-    new_date = date - timedelta(days=6)
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    new_date = dt - timedelta(days=6)
     return new_date.strftime("%Y-%m-%d")
 
 def get_shifts(conn, employees, periodBegin='1900-01-01', periodEnd = '2999-01-01'):
@@ -21,16 +19,15 @@ def get_shifts(conn, employees, periodBegin='1900-01-01', periodEnd = '2999-01-0
         dic = defaultdict(list)
         if not employees:
             return dic
-        btrustids = "','".join(employees)
+        placeholders = ",".join(["?"] * len(employees))
         cursor = conn.cursor()
         sql = (
             f"select btrustid, periodbegin, MondayBegin, mondayend, TuesdayBegin, tuesdayend, wednesdayBegin, wednesdayend, thursdayBegin, thursdayend, fridayBegin, fridayend, saturdayBegin, saturdayend, sundayBegin, sundayend, lunchminute"
-            f" from sysshift inner join sysdepartment on departmentid = sysdepartment.id inner join SysShiftDetail on sysshift.id=SysShiftDetail.shiftid inner join sysuser on sysuser.id = userid"
-            f" where periodBegin >= '{six_days_before(periodBegin)}' and periodBegin <= '{periodEnd}'"
-            f" and btrustid in ('{btrustids}')"
+            f" from sysshift inner join SysShiftDetail on sysshift.id=SysShiftDetail.shiftid inner join sysuser on sysuser.id = userid"
+            f" where periodBegin >= ? and periodBegin <= ?"
+            f" and btrustid in ({placeholders})"
         )
-        #sql = f"select btrustid, periodbegin, MondayBegin, mondayend, TuesdayBegin, tuesdayend, wednesdayBegin, wednesdayend, thursdayBegin, thursdayend, fridayBegin, fridayend, saturdayBegin, saturdayend, sundayBegin, sundayend, lunchminute from sysshift inner join sysdepartment on departmentid = sysdepartment.id inner join SysShiftDetail on sysshift.id=SysShiftDetail.shiftid inner join sysuser on sysuser.id = userid where btrustid in ('{btrustids}')"
-        cursor.execute(sql)
+        cursor.execute(sql, six_days_before(periodBegin), periodEnd, *employees)
         rows = cursor.fetchall()
         for row in rows:
             for i in range(7):
@@ -57,10 +54,10 @@ def get_punches(conn, employees, periodBegin='1900-01-01', periodEnd = '2999-01-
         dic = defaultdict(list)
         if not employees:
             return dic
-        btrustids = "','".join(employees)
+        placeholders = ",".join(["?"] * len(employees))
         cursor = conn.cursor()
-        sql = f"select btrustid, punchdate, hour, minute from syspunch where punchdate >= '{periodBegin}' and punchdate <= '{periodEnd}' and btrustid in ('{btrustids}')"
-        cursor.execute(sql)
+        sql = f"select btrustid, punchdate, hour, minute from syspunch where punchdate >= ? and punchdate <= ? and btrustid in ({placeholders})"
+        cursor.execute(sql, periodBegin, periodEnd, *employees)
         rows = cursor.fetchall()
         for row in rows:
             date = row[1]
@@ -77,10 +74,10 @@ def get_punch_problems(conn, employees, periodBegin='1900-01-01', periodEnd = '2
         dic = defaultdict(list)
         if not employees:
             return dic
-        btrustids = "','".join(employees)
+        placeholders = ",".join(["?"] * len(employees))
         cursor = conn.cursor()
-        sql = f"select btrustid, punchdate, realtotalhours from syspunchproblem where punchdate >= '{periodBegin}' and punchdate <= '{periodEnd}' and btrustid in ('{btrustids}')"
-        cursor.execute(sql)
+        sql = f"select btrustid, punchdate, realtotalhours from syspunchproblem where punchdate >= ? and punchdate <= ? and btrustid in ({placeholders})"
+        cursor.execute(sql, periodBegin, periodEnd, *employees)
         rows = cursor.fetchall()
         for row in rows:
             punch = PunchProblem(row[1], row[2])
@@ -170,7 +167,28 @@ def calculate_hours(shifts: list, punches: list, punchProblems: list) -> int:
                 totalHours += get_total_hours(punches)
     return totalHours
 
+def calculate_hours_by_shifts(shifts, punches, punchProblems) -> int:
+    dic_shift = {s.date: s for s in shifts}
+    dic_punch = defaultdict(list)
+    dic_problem = {p.date: p for p in punchProblems}
+
+    for punch in punches:
+        dic_punch[punch.date].append(punch)
+
+    total = 0
+
+    for date, shift in dic_shift.items():
+        if date in dic_problem:
+            total += dic_problem[date].totalHours
+        elif date in dic_punch:
+            total += get_total_hours(dic_punch[date], shift)
+
+    return total
+
 def get_person_hours(conn, employees, periodBegin, periodEnd) -> dict:
+    """
+    按【排班 打卡 打卡问题处理】来统计员工工时
+    """
     try:
         dic_hours = {}
         shifts_dic = get_shifts(conn, employees, periodBegin, periodEnd)
@@ -183,10 +201,98 @@ def get_person_hours(conn, employees, periodBegin, periodEnd) -> dict:
             total_hours = calculate_hours(shifts, punches, punch_problems)
             dic_hours[emp] = total_hours
         return dic_hours
-    finally:
-        conn.close()
+    except Exception as e:
+        raise
 
 def get_department_hours(conn, departments, periodBegin, periodEnd) -> dict:
-    # 得到时间段内排班记录，先是部门，再是人员
-    # 再得到人员的punch和punchproblem记录
-    # 算出每个人的hours，累积到部门上
+    """
+    按【历史排班归属】统计部门工时
+    """
+    cursor = None
+    try:
+        result = {}
+
+        if not departments:
+            return result
+
+        cursor = conn.cursor()
+
+        dept_placeholders = ",".join(["?"] * len(departments))
+
+        # 1️⃣ 查该部门在时间段内的排班（拿到 departmentId + btrustid）
+        sql = f"""
+            select 
+                d.id as departmentId,
+                u.btrustid,
+                s.periodBegin,
+                sd.MondayBegin, sd.MondayEnd,
+                sd.TuesdayBegin, sd.TuesdayEnd,
+                sd.WednesdayBegin, sd.WednesdayEnd,
+                sd.ThursdayBegin, sd.ThursdayEnd,
+                sd.FridayBegin, sd.FridayEnd,
+                sd.SaturdayBegin, sd.SaturdayEnd,
+                sd.SundayBegin, sd.SundayEnd,
+                sd.lunchminute
+            from sysshift s
+            inner join sysdepartment d on s.departmentid = d.id
+            inner join SysShiftDetail sd on s.id = sd.shiftid
+            inner join sysuser u on u.id = s.userid
+            where d.id in ({dept_placeholders})
+              and s.periodBegin >= ?
+              and s.periodBegin <= ?
+        """
+
+        cursor.execute(
+            sql,
+            (*departments, six_days_before(periodBegin), periodEnd)
+        )
+
+        rows = cursor.fetchall()
+
+        # department -> employee -> shifts
+        dept_emp_shifts = defaultdict(lambda: defaultdict(list))
+        all_emps = set()
+
+        for row in rows:
+            dept_id = row[0]
+            btrustid = row[1]
+            period_begin = row[2]
+
+            for i in range(7):
+                date = get_date(period_begin, i)
+                if periodBegin <= date <= periodEnd:
+                    shift = Shift(
+                        date,
+                        row[(i + 1) * 2],
+                        row[(i + 1) * 2 + 1],
+                        row[-1]
+                    )
+                    dept_emp_shifts[dept_id][btrustid].append(shift)
+                    all_emps.add(btrustid)
+
+        # 2️⃣ 批量查 punch / punchproblem
+        punches_dic = get_punches(conn, list(all_emps), periodBegin, periodEnd)
+        punch_problem_dic = get_punch_problems(conn, list(all_emps), periodBegin, periodEnd)
+
+        # 3️⃣ 计算 & 汇总
+        for dept_id, emp_shifts in dept_emp_shifts.items():
+            total = 0
+            persons = {}
+
+            for emp, shifts in emp_shifts.items():
+                punches = punches_dic.get(emp, [])
+                problems = punch_problem_dic.get(emp, [])
+                hours = calculate_hours_by_shifts(shifts, punches, problems)
+                persons[emp] = hours
+                total += hours
+
+            result[dept_id] = {
+                "total_hours": total,
+                "persons": persons
+            }
+
+        return result
+
+    finally:
+        if cursor:
+            cursor.close()
