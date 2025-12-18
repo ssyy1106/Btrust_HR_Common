@@ -23,7 +23,7 @@ def get_shifts(conn, employees, periodBegin='1900-01-01', periodEnd = '2999-01-0
         cursor = conn.cursor()
         sql = (
             f"select btrustid, periodbegin, MondayBegin, mondayend, TuesdayBegin, tuesdayend, wednesdayBegin, wednesdayend, thursdayBegin, thursdayend, fridayBegin, fridayend, saturdayBegin, saturdayend, sundayBegin, sundayend, lunchminute"
-            f" from sysshift inner join SysShiftDetail on sysshift.id=SysShiftDetail.shiftid inner join sysuser on sysuser.id = userid"
+            f" from sysshift inner join SysShiftDetail on sysshift.id=SysShiftDetail.shiftid inner join sysuser on sysuser.id = userid inner join sysdepartment on sysdepartment.id = sysshift.departmentid"
             f" where periodBegin >= ? and periodBegin <= ?"
             f" and btrustid in ({placeholders})"
         )
@@ -232,7 +232,7 @@ def get_department_hours(conn, departments, periodBegin, periodEnd) -> dict:
                 sd.FridayBegin, sd.FridayEnd,
                 sd.SaturdayBegin, sd.SaturdayEnd,
                 sd.SundayBegin, sd.SundayEnd,
-                sd.lunchminute
+                d.lunchminute
             from sysshift s
             inner join sysdepartment d on s.departmentid = d.id
             inner join SysShiftDetail sd on s.id = sd.shiftid
