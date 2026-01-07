@@ -236,7 +236,7 @@ def get_department_hours(conn, departments, periodBegin, periodEnd) -> dict:
             from sysshift s
             inner join sysdepartment d on s.departmentid = d.id
             inner join SysShiftDetail sd on s.id = sd.shiftid
-            inner join sysuser u on u.id = s.userid
+            inner join sysuser u on u.id = sd.userid
             where d.id in ({dept_placeholders})
               and s.periodBegin >= ?
               and s.periodBegin <= ?
