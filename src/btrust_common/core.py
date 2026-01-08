@@ -60,7 +60,7 @@ def get_punches(conn, employees, periodBegin='1900-01-01', periodEnd = '2999-01-
         cursor.execute(sql, periodBegin, periodEnd, *employees)
         rows = cursor.fetchall()
         for row in rows:
-            date = row[1]
+            date = row[1].strftime("%Y-%m-%d")
             punch = Punch(date, get_time(row))
             dic[row[0]].append(punch)
         return dic
@@ -110,7 +110,7 @@ def calculate(punchBegin, punchEnd, shiftBegin, shiftEnd) -> int:
     else:
         remain = punchEnd % 15
         punchEnd -= remain
-    return punchEnd - punchBegin
+    return max(0, punchEnd - punchBegin)
 
 def check_lunch_time(minutes, lunchMinute) -> int:
     if lunchMinute == 60:
@@ -256,15 +256,16 @@ def get_department_hours(conn, departments, periodBegin, periodEnd) -> dict:
         for row in rows:
             dept_id = row[0]
             btrustid = row[1]
-            period_begin = row[2]
+            monday_begin = row[2]
 
             for i in range(7):
-                date = get_date(period_begin, i)
+                date = get_date(monday_begin, i)
                 if periodBegin <= date <= periodEnd:
+                    
                     shift = Shift(
                         date,
-                        row[(i + 1) * 2],
-                        row[(i + 1) * 2 + 1],
+                        row[i * 2 + 3],
+                        row[i * 2 + 4],
                         row[-1]
                     )
                     dept_emp_shifts[dept_id][btrustid].append(shift)
@@ -273,7 +274,6 @@ def get_department_hours(conn, departments, periodBegin, periodEnd) -> dict:
         # 2️⃣ 批量查 punch / punchproblem
         punches_dic = get_punches(conn, list(all_emps), periodBegin, periodEnd)
         punch_problem_dic = get_punch_problems(conn, list(all_emps), periodBegin, periodEnd)
-
         # 3️⃣ 计算 & 汇总
         for dept_id, emp_shifts in dept_emp_shifts.items():
             total = 0
